@@ -1,37 +1,74 @@
+"""
+한 줄 건의함 - Supabase 연결 버전
+- 건의를 Supabase의 suggestions 테이블에 저장하고 불러옵니다.
+- 키는 환경 변수 SUPABASE_URL, SUPABASE_KEY에서 불러옵니다.
+"""
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import streamlit as st
+from supabase import create_client
 
-# 페이지 설정
-st.set_page_config(page_title="한 줄 건의함", page_icon="📫")
+st.set_page_config(page_title="한 줄 건의함", page_icon="📮")
+st.title("📮 한 줄 건의함")
+st.caption("학교에 바라는 점을 한 줄로 남겨 주세요. 이름은 적지 않아요.")
 
-st.title("📫 한 줄 건의함")
-st.write("건의 사항을 자유롭게 남겨주세요. (익명으로 접수됩니다)")
+CATEGORIES = ["급식", "시설", "행사", "기타"]
 
-# 세션 상태 초기화 (건의 내역 저장용 리스트)
-if 'suggestions' not in st.session_state:
-    st.session_state.suggestions = []
 
-# 건의 입력 폼
+# Supabase 연결 (한 번만 만들고 재사용)
+@st.cache_resource
+def get_client():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        st.error("환경 변수 SUPABASE_URL, SUPABASE_KEY가 없어요. Codespaces Secrets에 등록했는지 확인하세요.")
+        st.stop()
+    return create_client(url, key)
+
+
+supabase = get_client()
+
+
+def to_korean_time(text):
+    """DB에 저장된 시간(UTC)을 한국 시간으로 바꾸기"""
+    return datetime.fromisoformat(text).astimezone(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M")
+
+
+# 건의 입력
 with st.form("suggestion_form", clear_on_submit=True):
-    suggestion_text = st.text_input("건의 내용", placeholder="여기에 한 줄 건의를 적어주세요.", label_visibility="collapsed")
+    category = st.selectbox("카테고리", CATEGORIES)
+    content = st.text_input("건의 내용", placeholder="예) 매점 운영 시간을 늘려 주세요")
     submitted = st.form_submit_button("제출하기")
 
-    if submitted:
-        if suggestion_text.strip():  # 빈 공백 제출 방지
-            # 최신순 정렬을 위해 리스트의 맨 앞(0번 인덱스)에 추가
-            st.session_state.suggestions.insert(0, suggestion_text.strip())
-            st.success("건의가 성공적으로 제출되었습니다!")
-        else:
-            st.warning("내용을 입력한 후 제출해 주세요.")
+if submitted:
+    if content.strip() == "":
+        st.warning("내용을 입력해 주세요.")
+    else:
+        # 건의 저장 (id, likes, created_at은 DB가 자동으로 채움)
+        supabase.table("suggestions").insert(
+            {"content": content.strip(), "category": category}
+        ).execute()
+        st.success("건의가 등록되었어요!")
 
-st.divider()
+# 건의 불러오기 (최신순)
+rows = (
+    supabase.table("suggestions")
+    .select("*")
+    .order("created_at", desc=True)
+    .execute()
+    .data
+)
 
-# 접수된 건의 목록 출력
-st.subheader("📋 등록된 건의")
+st.subheader(f"건의 목록 ({len(rows)}개)")
 
-if not st.session_state.suggestions:
-    st.info("아직 등록된 건의가 없습니다.")
-else:
-    for suggestion in st.session_state.suggestions:
-        # Streamlit 컨테이너를 사용해 건의 내역을 깔끔하게 박스 형태로 표시
-        with st.container():
-            st.markdown(f"💬 {suggestion}")
+if not rows:
+    st.info("아직 건의가 없어요. 첫 번째 건의를 남겨 보세요!")
+
+for row in rows:
+    st.markdown(
+        f"- **[{row['category']}]** {row['content']} · 👍 {row['likes']}  \n"
+        f"  <small>{to_korean_time(row['created_at'])}</small>",
+        unsafe_allow_html=True,
+    )
